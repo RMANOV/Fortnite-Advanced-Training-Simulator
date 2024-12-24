@@ -6,6 +6,8 @@
 
 
 
+from pathlib import Path
+import os
 import pygame
 import numpy as np
 import random
@@ -16,6 +18,8 @@ from typing import List, Dict, Tuple
 import sqlite3
 from enum import Enum
 import math
+import os
+from pathlib import Path
 
 # Константи
 SCREEN_WIDTH = 1024
@@ -131,19 +135,64 @@ class PlayerAnalyzer:
 
 
 class SoundManager:
+    """Клас за управление на звуците в играта.
+    Ако липсват звукови файлове или папката assets, играта продължава без звук."""
+
     def __init__(self):
-        pygame.mixer.init()
-        self.sounds = {
-            'shoot': pygame.mixer.Sound('assets/shoot.wav'),
-            'hit': pygame.mixer.Sound('assets/hit.wav'),
-            'level_up': pygame.mixer.Sound('assets/level_up.wav')
+        self.sounds = {}
+        self.sound_enabled = False
+
+        try:
+            pygame.mixer.init()
+            self.sound_enabled = True
+            self._load_sounds()
+        except (pygame.error, Exception) as e:
+            print(f"Warning: Sound system initialization failed: {e}")
+            self.sound_enabled = False
+
+    def _load_sounds(self):
+        """Зарежда звуковите файлове от папката assets"""
+        sound_files = {
+            'shoot': 'assets/shoot.wav',
+            'hit': 'assets/hit.wav',
+            'level_up': 'assets/level_up.wav'
         }
 
+        # Проверява дали съществува папката assets
+        if not Path('assets').exists():
+            print("Warning: 'assets' directory not found")
+            return
+
+        # Зарежда всеки звук поотделно
+        for sound_name, sound_path in sound_files.items():
+            try:
+                if Path(sound_path).exists():
+                    self.sounds[sound_name] = pygame.mixer.Sound(sound_path)
+                else:
+                    print(f"Warning: Sound file not found: {sound_path}")
+            except (pygame.error, FileNotFoundError) as e:
+                print(f"Warning: Failed to load sound '{sound_name}': {e}")
+
     def play_sound(self, sound_name: str):
+        """Възпроизвежда звук ако е наличен и системата работи"""
+        if not self.sound_enabled:
+            return
+
         if sound_name in self.sounds:
-            volume = random.uniform(0.6, 1.0)
-            self.sounds[sound_name].set_volume(volume)
-            self.sounds[sound_name].play()
+            try:
+                volume = random.uniform(0.6, 1.0)
+                self.sounds[sound_name].set_volume(volume)
+                self.sounds[sound_name].play()
+            except pygame.error as e:
+                print(f"Warning: Failed to play sound '{sound_name}': {e}")
+
+    def cleanup(self):
+        """Освобождава ресурсите на звуковата система"""
+        try:
+            if self.sound_enabled:
+                pygame.mixer.quit()
+        except pygame.error:
+            pass
 
 
 class DifficultyManager:
@@ -413,13 +462,28 @@ class GameEngine(GameEngine):  # Продължение на класа
         self.sound_manager.play_sound('level_up')
         self.difficulty_manager.current_score_threshold *= 1.5
 
+    # def run(self):
+    #     running = True
+    #     while running:
+    #         running = self.handle_input()
+    #         self.update()
+    #         self.render()
+    #         self.clock.tick(FPS)
+
+    def cleanup(self):
+        self.sound_manager.cleanup()
+        pygame.quit()
+
     def run(self):
         running = True
-        while running:
-            running = self.handle_input()
-            self.update()
-            self.render()
-            self.clock.tick(FPS)
+        try:
+            while running:
+                running = self.handle_input()
+                self.update()
+                self.render()
+                self.clock.tick(FPS)
+        finally:
+            self.cleanup()
 
         pygame.quit()
 
@@ -428,5 +492,3 @@ class GameEngine(GameEngine):  # Продължение на класа
 if __name__ == "__main__":
     game = GameEngine()
     game.run()
-
-
