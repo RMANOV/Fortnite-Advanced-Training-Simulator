@@ -211,8 +211,8 @@ class DifficultyManager:
         }
 
     def should_level_up(self, score: int, play_time: float) -> bool:
-        return (play_time >= 180 and  # 3 минуты минимум
-                score >= self.current_score_threshold * 0.67)
+        return (play_time >= 60 and  # 1 минута минимум
+                score >= self.current_score_threshold * 0.30)
 
 
 class TargetManager:
