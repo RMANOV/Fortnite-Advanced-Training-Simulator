@@ -198,7 +198,7 @@ class SoundManager:
 class DifficultyManager:
     def __init__(self):
         self.current_level = 1
-        self.current_score_threshold = 1000
+        self.current_score_threshold = 100
 
     def calculate_level_parameters(self) -> dict:
         return {
@@ -211,8 +211,8 @@ class DifficultyManager:
         }
 
     def should_level_up(self, score: int, play_time: float) -> bool:
-        return (play_time >= 60 and  # 1 минута минимум
-                score >= self.current_score_threshold * 0.30)
+        return (play_time >= 30 and  # 1/2 минута минимум
+                score >= self.current_score_threshold * 0.70)
 
 
 class TargetManager:
@@ -492,8 +492,3 @@ class GameEngine(GameEngine):  # Продължение на класа
 if __name__ == "__main__":
     game = GameEngine()
     game.run()
-
-
-
-
-
