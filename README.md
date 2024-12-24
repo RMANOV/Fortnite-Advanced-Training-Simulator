@@ -51,12 +51,17 @@ NumPy
 Threading capabilities
 
 Mathematical Approach
+
 The difficulty progression follows a carefully calculated curve:
 pythonCopytarget_lifetime = max(500, INITIAL_TARGET_LIFETIME / (1 + 0.3 * level))
 shoot_delay = min(500, INITIAL_SHOOT_DELAY * (1 + 0.2 * level))
 cursor_shake = max(0, (level - 2) * 5)
+
 Development Philosophy
+
 Built with a focus on technical excellence and player challenge progression, this trainer implements advanced gaming concepts while maintaining clean, maintainable code structure. The modular design allows for easy expansion and modification of game parameters.
 Ideal for serious gamers looking to improve their aim while experiencing a technically sophisticated training solution that adapts to their skill level.
+
 Author's Note
+
 This project demonstrates the power of combining advanced programming concepts with game design principles to create a challenging and effective training tool. The mathematical progression of difficulty ensures that players are constantly challenged at their skill frontier.
