@@ -1,0 +1,432 @@
+
+
+
+
+
+
+
+
+import pygame
+import numpy as np
+import random
+import threading
+import time
+from dataclasses import dataclass
+from typing import List, Dict, Tuple
+import sqlite3
+from enum import Enum
+import math
+
+# Константи
+SCREEN_WIDTH = 1024
+SCREEN_HEIGHT = 768
+FPS = 60
+COLORS = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+INITIAL_TARGET_LIFETIME = 2000  # милисекунди
+INITIAL_SHOOT_DELAY = 200  # милисекунди
+INACTIVITY_TIMEOUT = 420000  # 7 минути в милисекунди
+
+class GameState(Enum):
+    MENU = 1
+    PLAYING = 2
+    PAUSED = 3
+    GAME_OVER = 4
+
+@dataclass
+class PlayerStats:
+    reaction_times: List[float]
+    accuracy_by_section: Dict[int, List[bool]]
+    current_score: int
+    total_shots: int
+    successful_shots: int
+    last_activity_time: float
+
+class Target:
+    def __init__(self, x: float, y: float, radius: float, color: Tuple[int, int, int], 
+                 is_fake: bool = False, hits_required: int = 1):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.color = color
+        self.is_fake = is_fake
+        self.hits_required = hits_required
+        self.current_hits = 0
+        self.creation_time = time.time()
+        self.velocity = [random.uniform(-2, 2), random.uniform(-2, 2)]
+        
+    def update(self):
+        self.x += self.velocity[0]
+        self.y += self.velocity[1]
+        
+        # Отскачане от стените
+        if self.x - self.radius <= 0 or self.x + self.radius >= SCREEN_WIDTH:
+            self.velocity[0] *= -1
+        if self.y - self.radius <= 0 or self.y + self.radius >= SCREEN_HEIGHT:
+            self.velocity[1] *= -1
+            
+    def is_hit(self, mouse_x: float, mouse_y: float) -> bool:
+        distance = math.sqrt((mouse_x - self.x)**2 + (mouse_y - self.y)**2)
+        return distance <= self.radius
+
+class ScreenAnalyzer:
+    def __init__(self, level: int):
+        self.level = level
+        self.sections = self._create_sections()
+        
+    def _create_sections(self) -> List[Tuple[int, int, int, int]]:
+        base_sections = 6
+        sections_count = base_sections + (self.level - 1) * 2
+        
+        # Създаване на мрежа от секции
+        cols = int(math.sqrt(sections_count))
+        rows = math.ceil(sections_count / cols)
+        
+        section_width = SCREEN_WIDTH // cols
+        section_height = SCREEN_HEIGHT // rows
+        
+        sections = []
+        for row in range(rows):
+            for col in range(cols):
+                if len(sections) >= sections_count:
+                    break
+                sections.append((
+                    col * section_width,
+                    row * section_height,
+                    section_width,
+                    section_height
+                ))
+        return sections
+    
+    def get_section(self, x: float, y: float) -> int:
+        for i, (sx, sy, sw, sh) in enumerate(self.sections):
+            if sx <= x < sx + sw and sy <= y < sy + sh:
+                return i
+        return -1
+
+class PlayerAnalyzer:
+    def __init__(self):
+        self.stats = PlayerStats([], {}, 0, 0, 0, time.time())
+        
+    def update_stats(self, section: int, reaction_time: float, hit: bool):
+        self.stats.reaction_times.append(reaction_time)
+        if section not in self.stats.accuracy_by_section:
+            self.stats.accuracy_by_section[section] = []
+        self.stats.accuracy_by_section[section].append(hit)
+        
+        self.stats.total_shots += 1
+        if hit:
+            self.stats.successful_shots += 1
+            
+    def get_accuracy(self) -> float:
+        if self.stats.total_shots == 0:
+            return 0
+        return self.stats.successful_shots / self.stats.total_shots
+    
+    def get_weak_sections(self) -> List[int]:
+        weak_sections = []
+        for section, hits in self.stats.accuracy_by_section.items():
+            if len(hits) > 0 and sum(hits) / len(hits) < 0.5:
+                weak_sections.append(section)
+        return weak_sections
+
+
+class SoundManager:
+    def __init__(self):
+        pygame.mixer.init()
+        self.sounds = {
+            'shoot': pygame.mixer.Sound('assets/shoot.wav'),
+            'hit': pygame.mixer.Sound('assets/hit.wav'),
+            'level_up': pygame.mixer.Sound('assets/level_up.wav')
+        }
+
+    def play_sound(self, sound_name: str):
+        if sound_name in self.sounds:
+            volume = random.uniform(0.6, 1.0)
+            self.sounds[sound_name].set_volume(volume)
+            self.sounds[sound_name].play()
+
+
+class DifficultyManager:
+    def __init__(self):
+        self.current_level = 1
+        self.current_score_threshold = 1000
+
+    def calculate_level_parameters(self) -> dict:
+        return {
+            'target_lifetime': max(500, INITIAL_TARGET_LIFETIME / (1 + 0.3 * self.current_level)),
+            'shoot_delay': min(500, INITIAL_SHOOT_DELAY * (1 + 0.2 * self.current_level)),
+            'fake_target_count': 3 + self.current_level,
+            'hits_required': 1 + self.current_level // 2,
+            'cursor_shake_intensity': max(0, (self.current_level - 2) * 5),
+            'enemy_fire_rate': max(0, (self.current_level - 2) * 0.5)
+        }
+
+    def should_level_up(self, score: int, play_time: float) -> bool:
+        return (play_time >= 180 and  # 3 минуты минимум
+                score >= self.current_score_threshold * 0.67)
+
+
+class TargetManager:
+    def __init__(self, screen_analyzer: ScreenAnalyzer, difficulty_manager: DifficultyManager):
+        self.targets: List[Target] = []
+        self.screen_analyzer = screen_analyzer
+        self.difficulty_manager = difficulty_manager
+        self.last_target_time = time.time()
+
+    def update_targets(self):
+        current_time = time.time()
+        params = self.difficulty_manager.calculate_level_parameters()
+
+        # Премахване на мишени, които са извън екрана
+        self.targets = [target for target in self.targets
+                        if (current_time - target.creation_time) * 1000 < params['target_lifetime']]
+
+        # Обновяване на мишените
+        for target in self.targets:
+            target.update()
+
+    def spawn_target(self, weak_sections: List[int]):
+        params = self.difficulty_manager.calculate_level_parameters()
+
+        # Случайно място за появяване на мишените
+        if weak_sections and random.random() < 0.7:
+            section = random.choice(weak_sections)
+            section_rect = self.screen_analyzer.sections[section]
+            x = random.uniform(
+                section_rect[0], section_rect[0] + section_rect[2])
+            y = random.uniform(
+                section_rect[1], section_rect[1] + section_rect[3])
+        else:
+            x = random.uniform(0, SCREEN_WIDTH)
+            y = random.uniform(0, SCREEN_HEIGHT)
+
+        is_fake = random.random() < (params['fake_target_count'] / 20)
+
+        target = Target(
+            x=x,
+            y=y,
+            radius=20,
+            color=random.choice(COLORS),
+            is_fake=is_fake,
+            hits_required=params['hits_required']
+        )
+        self.targets.append(target)
+
+
+class GameEngine:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Fortnite Aim Trainer")
+
+        self.clock = pygame.time.Clock()
+        self.game_state = GameState.MENU
+
+        self.difficulty_manager = DifficultyManager()
+        self.screen_analyzer = ScreenAnalyzer(
+            self.difficulty_manager.current_level)
+        self.target_manager = TargetManager(
+            self.screen_analyzer, self.difficulty_manager)
+        self.player_analyzer = PlayerAnalyzer()
+        self.sound_manager = SoundManager()
+
+        self.last_shot_time = 0
+        self.game_start_time = time.time()
+        self.cursor_pos = [SCREEN_WIDTH//2, SCREEN_HEIGHT//2]
+
+    def handle_input(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                self.handle_shot()
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.game_state = GameState.MENU
+                elif event.key == pygame.K_SPACE and self.game_state == GameState.MENU:
+                    self.start_new_game()
+
+        return True
+
+    def handle_shot(self):
+        current_time = time.time()
+        params = self.difficulty_manager.calculate_level_parameters()
+
+        if (current_time - self.last_shot_time) * 1000 < params['shoot_delay']:
+            return
+
+        self.last_shot_time = current_time
+        self.sound_manager.play_sound('shoot')
+
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        section = self.screen_analyzer.get_section(mouse_x, mouse_y)
+
+        hit = False
+        for target in self.target_manager.targets:
+            if not target.is_fake and target.is_hit(mouse_x, mouse_y):
+                target.current_hits += 1
+                if target.current_hits >= target.hits_required:
+                    self.target_manager.targets.remove(target)
+                    self.sound_manager.play_sound('hit')
+                hit = True
+                reaction_time = (current_time - target.creation_time) * 1000
+                self.player_analyzer.update_stats(section, reaction_time, True)
+                break
+
+        if not hit:
+            self.player_analyzer.update_stats(section, 0, False)
+
+    def update_cursor_position(self):
+        if self.difficulty_manager.current_level > 2:
+            params = self.difficulty_manager.calculate_level_parameters()
+            shake = params['cursor_shake_intensity']
+            self.cursor_pos[0] += random.uniform(-shake, shake)
+            self.cursor_pos[1] += random.uniform(-shake, shake)
+
+            # Ограничиваем положение курсора экраном
+            self.cursor_pos[0] = max(0, min(SCREEN_WIDTH, self.cursor_pos[0]))
+            self.cursor_pos[1] = max(0, min(SCREEN_HEIGHT, self.cursor_pos[1]))
+
+            pygame.mouse.set_pos(self.cursor_pos)
+
+
+class GameEngine(GameEngine):  # Продължение на класа
+    def render(self):
+        self.screen.fill((0, 0, 0))  # Черен фон
+
+        if self.game_state == GameState.MENU:
+            self.render_menu()
+        elif self.game_state == GameState.PLAYING:
+            self.render_game()
+        elif self.game_state == GameState.GAME_OVER:
+            self.render_game_over()
+
+        pygame.display.flip()
+
+    def render_menu(self):
+        font = pygame.font.Font(None, 74)
+        title = font.render('Fortnite Aim Trainer', True, (255, 255, 255))
+        start = font.render('Press SPACE to Start', True, (255, 255, 255))
+
+        self.screen.blit(
+            title, (SCREEN_WIDTH//2 - title.get_width()//2, SCREEN_HEIGHT//3))
+        self.screen.blit(
+            start, (SCREEN_WIDTH//2 - start.get_width()//2, SCREEN_HEIGHT//2))
+
+    def render_game(self):
+        # Рендериране на мишените
+        for target in self.target_manager.targets:
+            color = target.color if not target.is_fake else (100, 100, 100)
+            pygame.draw.circle(self.screen, color, (int(
+                target.x), int(target.y)), int(target.radius))
+            if target.hits_required > 1:
+                font = pygame.font.Font(None, 24)
+                hits_left = font.render(
+                    str(target.hits_required - target.current_hits), True, (255, 255, 255))
+                self.screen.blit(
+                    hits_left, (target.x - hits_left.get_width()//2, target.y - hits_left.get_height()//2))
+
+        # Рендериране на рамката (мигаща)
+        if self.difficulty_manager.current_level > 1:
+            border_color = (255, 0, 0) if time.time() % (
+                0.5 / self.difficulty_manager.current_level) < 0.25 else (0, 0, 0)
+            pygame.draw.rect(self.screen, border_color,
+                             (0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), 3)
+
+        # Показване на статистика и ниво на играча
+        self.render_stats()
+        
+
+    def render_stats(self):
+        font = pygame.font.Font(None, 36)
+        stats = [
+            f"Level: {self.difficulty_manager.current_level}",
+            f"Score: {self.player_analyzer.stats.current_score}",
+            f"Accuracy: {self.player_analyzer.get_accuracy():.1%}",
+            f"Time: {int(time.time() - self.game_start_time)}s"
+        ]
+
+        for i, stat in enumerate(stats):
+            text = font.render(stat, True, (255, 255, 255))
+            self.screen.blit(text, (10, 10 + i * 30))
+
+    def render_game_over(self):
+        font = pygame.font.Font(None, 74)
+        game_over = font.render('Game Over', True, (255, 0, 0))
+        score = font.render(f'Final Score: {
+                            self.player_analyzer.stats.current_score}', True, (255, 255, 255))
+        restart = font.render('Press SPACE to Restart', True, (255, 255, 255))
+
+        self.screen.blit(game_over, (SCREEN_WIDTH//2 -
+                         game_over.get_width()//2, SCREEN_HEIGHT//3))
+        self.screen.blit(
+            score, (SCREEN_WIDTH//2 - score.get_width()//2, SCREEN_HEIGHT//2))
+        self.screen.blit(restart, (SCREEN_WIDTH//2 -
+                         restart.get_width()//2, 2*SCREEN_HEIGHT//3))
+
+    def start_new_game(self):
+        self.game_state = GameState.PLAYING
+        self.difficulty_manager.current_level = 1
+        self.screen_analyzer = ScreenAnalyzer(
+            self.difficulty_manager.current_level)
+        self.target_manager = TargetManager(
+            self.screen_analyzer, self.difficulty_manager)
+        self.player_analyzer = PlayerAnalyzer()
+        self.game_start_time = time.time()
+        self.last_shot_time = 0
+
+    def update(self):
+        if self.game_state != GameState.PLAYING:
+            return
+
+        current_time = time.time()
+
+        # Проверка за неактивност
+        if current_time - self.player_analyzer.stats.last_activity_time > INACTIVITY_TIMEOUT / 1000:
+            self.game_state = GameState.GAME_OVER
+            return
+
+        # Обновяване на мишените
+        self.target_manager.update_targets()
+
+        # Създаване на нови мишени
+        if random.random() < 0.02:  # 2% шанс на всеки фрейм
+            self.target_manager.spawn_target(
+                self.player_analyzer.get_weak_sections())
+
+        # Обновяване на позицията на курсора
+        self.update_cursor_position()
+
+        # Проверка за преминаване на следващо ниво
+        if self.difficulty_manager.should_level_up(
+            self.player_analyzer.stats.current_score,
+            current_time - self.game_start_time
+        ):
+            self.level_up()
+
+    def level_up(self):
+        self.difficulty_manager.current_level += 1
+        self.screen_analyzer = ScreenAnalyzer(
+            self.difficulty_manager.current_level)
+        self.sound_manager.play_sound('level_up')
+        self.difficulty_manager.current_score_threshold *= 1.5
+
+    def run(self):
+        running = True
+        while running:
+            running = self.handle_input()
+            self.update()
+            self.render()
+            self.clock.tick(FPS)
+
+        pygame.quit()
+
+
+# Стартиране на играта
+if __name__ == "__main__":
+    game = GameEngine()
+    game.run()
+
+
