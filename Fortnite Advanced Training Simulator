@@ -28,7 +28,7 @@ FPS = 60
 COLORS = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
 INITIAL_TARGET_LIFETIME = 2000  # милисекунди
 INITIAL_SHOOT_DELAY = 100  # милисекунди
-INACTIVITY_TIMEOUT = 420000  # 7 минути в милисекунди
+INACTIVITY_TIMEOUT = 100000  # милисекунди/100000 = 100 секунди
 
 class GameState(Enum):
     MENU = 1
@@ -244,7 +244,7 @@ class DifficultyManager:
         self.current_score_threshold = 1000  # Начален праг за преминаване на ниво
 
     def should_level_up(self, score: int, play_time: float) -> bool:
-        min_time_reached = play_time >= 60  # 1 минута минимум
+        min_time_reached = play_time >= 30  # 1/2 минута минимум
         score_threshold_reached = score >= self.current_score_threshold * 0.3
 
         if min_time_reached and score_threshold_reached:
@@ -539,18 +539,18 @@ class GameEngine(GameEngine):  # Продължение на класа
     #     self.difficulty_manager.current_score_threshold *= 1.5
 
     def level_up(self):
-        print(f"Advancing from level {self.current_level}")
-        self.current_level += 1
-        # Увеличаваем порог для следующего уровня
-        self.current_score_threshold = int(self.current_score_threshold * 1.5)
+        print(f"Advancing from level {self.difficulty_manager.current_level} to {self.difficulty_manager.current_level + 1}")
+        self.difficulty_manager.current_level += 1
+        # Увеличаване на прага за преминаване на следващо ниво
+        self.difficulty_manager.current_score_threshold *= 1.5
 
-    # def run(self):
-    #     running = True
-    #     while running:
-    #         running = self.handle_input()
-    #         self.update()
-    #         self.render()
-    #         self.clock.tick(FPS)
+    def run(self):
+        running = True
+        while running:
+            running = self.handle_input()
+            self.update()
+            self.render()
+            self.clock.tick(FPS)
 
     def cleanup(self):
         self.sound_manager.cleanup()
@@ -574,3 +574,7 @@ class GameEngine(GameEngine):  # Продължение на класа
 if __name__ == "__main__":
     game = GameEngine()
     game.run()
+    game.cleanup()
+
+
+# Край на кода
