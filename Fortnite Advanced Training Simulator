@@ -492,3 +492,8 @@ class GameEngine(GameEngine):  # Продължение на класа
 if __name__ == "__main__":
     game = GameEngine()
     game.run()
+
+
+
+
+
